@@ -182,10 +182,12 @@ message ColumnStatistics {
   string physical_type = 2;
   // -1 if unknown/not reported by the source.
   int64 null_count = 3;
-  // -1 if unknown/not reported by the source (Parquet only ever reports
-  // this when every row group's stats carry it; Arrow IPC never reports
-  // it — computing exact distinct counts is out of scope for a stats
-  // node, not just "not implemented").
+  // -1 if unknown/not reported by the source. Parquet only ever reports
+  // this for a single-row-group file whose one row group's stats carry
+  // it (merging per-row-group distinct counts across multiple row groups
+  // is not valid — the sets can overlap — so multi-row-group files always
+  // report -1 here); Arrow IPC never reports it — computing exact distinct
+  // counts is out of scope for a stats node, not just "not implemented".
   int64 distinct_count = 4;
   // Stringified min/max (e.g. "42", "2024-01-01T00:00:00", "abc").
   string min_value = 5;
