@@ -117,8 +117,8 @@ def project(ax: AxiomContext, input: ProjectRequest) -> ProjectResult:
     Columns (empty = all) and a row offset/limit narrow what is read; the
     limit defaults to 5,000 rows and is hard-capped at 50,000 regardless of
     what is requested, and the result is further trimmed if needed to fit
-    the 640 KiB output cap — truncated=true and total_rows_available report
-    whenever the result is a strict subset of what was available. An
+    the MAX_OUTPUT_BYTES cap — truncated=true and total_rows_available
+    report whenever the result is a strict subset of what was available. An
     unknown requested column name or malformed input returns a structured
     error.
     """
@@ -161,7 +161,7 @@ def project(ax: AxiomContext, input: ProjectRequest) -> ProjectResult:
     except Exception as e:
         return ProjectResult(error=parse_error(f"could not encode as the requested output_format: {e}"))
 
-    # Fit the 640 KiB output cap by shrinking the row count if needed —
+    # Fit the MAX_OUTPUT_BYTES output cap by shrinking the row count if needed —
     # this operation is already a deliberately bounded subset, so trimming
     # further (and reporting it via `truncated`) is the right behavior
     # rather than an error.

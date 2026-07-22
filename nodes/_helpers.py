@@ -2,12 +2,16 @@
 
 Bounds and rationale
 ---------------------
-The Axiom node gRPC transport caps a message at ~4 MiB, but the *deployed*
-invocation's HTTP ingress caps the request/response body far tighter
-(observed ~1 MiB) — that is the real binding limit for a payload-bearing
-node, and it is invisible to local `axiom test`/`axiom dev`. MAX_INPUT_BYTES
-and MAX_OUTPUT_BYTES are set comfortably under that, leaving margin for
-base64/JSON framing overhead at the ingress.
+The platform's deployed-invocation HTTP ingress accepts up to a 16 MiB
+invoke payload (request body up to 17 MiB; the node gRPC transport itself
+caps at 24 MiB) — that is the real binding limit for a payload-bearing node.
+(An earlier revision of this package capped MAX_INPUT_BYTES/MAX_OUTPUT_BYTES
+at 640 KiB to work around a since-fixed ingress bug that silently truncated
+the limit to ~1 MiB; that workaround no longer applies.) A `data` field is
+carried as base64 inside a JSON envelope, which expands raw bytes by ~1.33x
+before framing overhead, so MAX_INPUT_BYTES/MAX_OUTPUT_BYTES are set to
+11 MiB raw — ~14.6 MiB base64-encoded, leaving headroom under the 16 MiB
+invoke-payload ceiling for JSON envelope/field overhead.
 
 Cost bound on decoding: Parquet's footer reports `num_rows` for free (no
 decompression). Its *declared* per-column "uncompressed size" is NOT a
@@ -37,8 +41,8 @@ from gen.messages_pb2 import Error, FileFormat
 
 # --- Bounds --------------------------------------------------------------
 
-MAX_INPUT_BYTES = 640 * 1024
-MAX_OUTPUT_BYTES = 640 * 1024
+MAX_INPUT_BYTES = 11 * 1024 * 1024
+MAX_OUTPUT_BYTES = 11 * 1024 * 1024
 
 MAX_ROW_GROUPS_RETURNED = 1000
 MAX_COLUMNS_RETURNED = 500

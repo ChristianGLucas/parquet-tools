@@ -21,11 +21,11 @@ _VALID_FORMATS = {
 
 
 def convert_format(ax: AxiomContext, input: ConvertFormatRequest) -> ConvertFormatResult:
-    """Convert a whole small file between Parquet, Arrow IPC, CSV, and JSON
-    (any pairing, including the same format in and out as a normalize/
-    rewrite pass). Represents the ENTIRE input in the target format — if the
-    source has too many rows or the whole-file result would exceed the
-    640 KiB output cap, the call is rejected with a structured TOO_LARGE
+    """Convert a whole file between Parquet, Arrow IPC, CSV, and JSON (any
+    pairing, including the same format in and out as a normalize/rewrite
+    pass). Represents the ENTIRE input in the target format — if the source
+    has too many rows or the whole-file result would exceed the
+    MAX_OUTPUT_BYTES cap, the call is rejected with a structured TOO_LARGE
     error rather than silently truncated; use Project instead for a
     deliberately bounded subset. Malformed input for the declared
     input_format returns a structured PARSE_ERROR.

@@ -25,8 +25,9 @@ transform — no filesystem, network, state, or secrets.
 
 ## Bounds
 
-Every input is capped at 640 KiB and every output at 640 KiB (comfortably under the
-platform's deployed-invocation ingress limit). `ConvertFormat` rejects an over-large
+Every input is capped at 11 MiB and every output at 11 MiB raw (comfortably under the
+platform's 16 MiB deployed-invocation payload limit once base64/JSON envelope overhead
+is accounted for). `ConvertFormat` rejects an over-large
 source by row count before reading it, and represents the whole file — if it would not
 fit the output cap it is rejected with a structured error rather than silently
 truncated (use `Project` for a deliberately bounded subset). `Project`'s row handling

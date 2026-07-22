@@ -36,10 +36,12 @@ package christiangeorgelucas.parquet_tools;
 // branch in the envelope itself.
 //
 // SAFETY (see nodes/_helpers.py for the enforced bounds):
-//   - Every `data` input is capped at MAX_INPUT_BYTES (640 KiB — well under
-//     the platform's deployed-invocation ingress limit, which binds tighter
-//     than the raw node gRPC transport cap; this is a defensive check on
-//     the raw payload before any parsing).
+//   - Every `data` input is capped at MAX_INPUT_BYTES (11 MiB raw — the
+//     platform's deployed-invocation ingress accepts up to a 16 MiB invoke
+//     payload; a base64-in-JSON `data` field expands raw bytes by ~1.33x,
+//     so 11 MiB raw leaves headroom under that ceiling for JSON envelope
+//     overhead. This is a defensive check on the raw payload before any
+//     parsing).
 //   - Before materializing a Parquet file's data into memory, its footer
 //     metadata (num_rows, cheap — no decompression) is checked against a
 //     row-count bound and the read is refused with a structured error if

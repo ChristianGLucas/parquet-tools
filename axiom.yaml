@@ -1,5 +1,5 @@
 name: christiangeorgelucas/parquet-tools
-version: 0.1.0
+version: 0.1.1
 language: python
 description: >-
   Composable Axiom nodes for deterministic, offline inspection and bounded
@@ -10,17 +10,17 @@ description: >-
   read file- and row-group-level metadata (row/column counts, format
   version, per-row-group sizes); read per-column statistics (null counts,
   min/max, distinct counts, compression, encodings); validate structural
-  well-formedness; convert a whole small file between Parquet, Arrow IPC,
-  CSV, and JSON; and project a bounded subset of columns/rows out of a
-  Parquet or Arrow IPC file into any of those formats. Every node is a pure
+  well-formedness; convert a whole file between Parquet, Arrow IPC, CSV,
+  and JSON; and project a bounded subset of columns/rows out of a Parquet
+  or Arrow IPC file into any of those formats. Every node is a pure
   bytes-in/bytes-or-struct-out transform — no filesystem, network, state, or
-  secrets. Every input is capped at 640 KiB and every output at 640 KiB
-  (well under the platform's deployed-invocation ingress limit, which binds
-  tighter than the raw node gRPC transport cap); ConvertFormat additionally
-  rejects an over-large source by row count before reading it, and whole-
-  file conversion is rejected with a structured error rather than silently
-  truncated if the converted result would not fit — use Project for a
-  deliberately bounded subset instead.
+  secrets. Every input is capped at 11 MiB and every output at 11 MiB raw
+  (comfortably under the platform's 16 MiB deployed-invocation payload
+  limit once base64/JSON envelope overhead is accounted for); ConvertFormat
+  additionally rejects an over-large source by row count before reading it,
+  and whole-file conversion is rejected with a structured error rather than
+  silently truncated if the converted result would not fit — use Project
+  for a deliberately bounded subset instead.
 license: MIT
 author: Christian George Lucas
 tags:
@@ -84,11 +84,11 @@ nodes:
       output: ValidateFileResult
     - name: ConvertFormat
       description: >-
-        Convert a whole small file between Parquet, Arrow IPC, CSV, and
-        JSON (any pairing, including the same format in and out as a
-        normalize/rewrite pass). Represents the ENTIRE input in the target
-        format — if the source has too many rows or the whole-file result
-        would exceed the 640 KiB output cap, the call is rejected with a
+        Convert a whole file between Parquet, Arrow IPC, CSV, and JSON (any
+        pairing, including the same format in and out as a normalize/
+        rewrite pass). Represents the ENTIRE input in the target format —
+        if the source has too many rows or the whole-file result would
+        exceed the 11 MiB output cap, the call is rejected with a
         structured TOO_LARGE error rather than silently truncated; use
         Project instead for a deliberately bounded subset. Malformed input
         for the declared input_format returns a structured PARSE_ERROR.
@@ -101,7 +101,7 @@ nodes:
         or JSON. Columns (empty = all) and a row offset/limit narrow what
         is read; the limit defaults to 5,000 rows and is hard-capped at
         50,000 regardless of what is requested, and the result is further
-        trimmed if needed to fit the 640 KiB output cap — truncated=true and
+        trimmed if needed to fit the 11 MiB output cap — truncated=true and
         total_rows_available report whenever the result is a strict subset
         of what was available. An unknown requested column name or
         malformed input returns a structured error.
