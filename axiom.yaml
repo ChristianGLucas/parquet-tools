@@ -1,0 +1,109 @@
+name: christiangeorgelucas/parquet-tools
+version: 0.1.0
+language: python
+description: >-
+  Composable Axiom nodes for deterministic, offline inspection and bounded
+  transformation of Apache Parquet and Apache Arrow IPC columnar files,
+  wrapping pyarrow (Apache-2.0) — the reference Python binding to the Arrow
+  C++ library, which also owns the canonical Parquet reader/writer. Read a
+  file's schema (columns, Arrow types, nullability, key/value metadata);
+  read file- and row-group-level metadata (row/column counts, format
+  version, per-row-group sizes); read per-column statistics (null counts,
+  min/max, distinct counts, compression, encodings); validate structural
+  well-formedness; convert a whole small file between Parquet, Arrow IPC,
+  CSV, and JSON; and project a bounded subset of columns/rows out of a
+  Parquet or Arrow IPC file into any of those formats. Every node is a pure
+  bytes-in/bytes-or-struct-out transform — no filesystem, network, state, or
+  secrets. Every input is capped at 640 KiB and every output at 640 KiB
+  (well under the platform's deployed-invocation ingress limit, which binds
+  tighter than the raw node gRPC transport cap); ConvertFormat additionally
+  rejects an over-large source by row count before reading it, and whole-
+  file conversion is rejected with a structured error rather than silently
+  truncated if the converted result would not fit — use Project for a
+  deliberately bounded subset instead.
+license: MIT
+author: Christian George Lucas
+tags:
+  - parquet
+  - arrow
+  - arrow-ipc
+  - columnar
+  - analytics
+  - pyarrow
+  - schema
+  - statistics
+  - data-conversion
+nodes:
+    - name: ReadSchema
+      description: >-
+        Read a Parquet or Arrow IPC file's schema: every column's name,
+        Arrow logical type (e.g. "int64", "string", "timestamp[us,
+        tz=UTC]", "list<item: int32>"), nullability, and Parquet field id
+        (-1 for Arrow IPC), plus schema-level key/value metadata. Detects
+        whether Arrow IPC is file-framed or stream-framed. Malformed input
+        or an unsupported/unspecified format returns a structured error
+        rather than crashing.
+      input: ReadSchemaRequest
+      output: ReadSchemaResult
+    - name: ReadFileMetadata
+      description: >-
+        Read a Parquet or Arrow IPC file's file- and row-group-level
+        metadata: total row/column counts, row-group (or Arrow-IPC
+        record-batch) count, format version string, Parquet's created_by
+        footer string, footer serialized size, and a per-row-group summary
+        (row count, uncompressed and compressed byte size) capped at 1000
+        entries with a truncation flag. Malformed input returns a
+        structured error rather than crashing.
+      input: ReadFileMetadataRequest
+      output: ReadFileMetadataResult
+    - name: ReadColumnStatistics
+      description: >-
+        Read per-column statistics for a Parquet or Arrow IPC file:
+        physical type, null count, distinct count, stringified min/max,
+        compression codec, and encodings, aggregated across the whole
+        file. Parquet reports these from its footer's own column-chunk
+        statistics (no full-file scan); Arrow IPC has no such footer, so
+        its null_count/min/max are computed by one in-memory pass over the
+        decoded data and distinct_count/compression/encodings are always
+        absent. Caller can request specific columns (empty = all, capped
+        at 500 with a truncation flag). Malformed input or an unknown
+        requested column name returns a structured error.
+      input: ReadColumnStatisticsRequest
+      output: ReadColumnStatisticsResult
+    - name: ValidateFile
+      description: >-
+        Cheaply check whether bytes are a structurally well-formed Parquet
+        or Arrow IPC file (footer/schema parses) within the package's
+        documented size caps, without paying for a full schema or
+        statistics read. Returns valid=false with a human-readable detail
+        (not a crash or a raised error) for anything unparseable or over
+        the decompressed-size cap; a hard input-level failure (e.g. the
+        raw payload itself is oversized) is reported via the separate
+        structured error field.
+      input: ValidateFileRequest
+      output: ValidateFileResult
+    - name: ConvertFormat
+      description: >-
+        Convert a whole small file between Parquet, Arrow IPC, CSV, and
+        JSON (any pairing, including the same format in and out as a
+        normalize/rewrite pass). Represents the ENTIRE input in the target
+        format — if the source has too many rows or the whole-file result
+        would exceed the 640 KiB output cap, the call is rejected with a
+        structured TOO_LARGE error rather than silently truncated; use
+        Project instead for a deliberately bounded subset. Malformed input
+        for the declared input_format returns a structured PARSE_ERROR.
+      input: ConvertFormatRequest
+      output: ConvertFormatResult
+    - name: Project
+      description: >-
+        Select/project a bounded subset of columns and rows out of a
+        Parquet or Arrow IPC file and emit it as Parquet, Arrow IPC, CSV,
+        or JSON. Columns (empty = all) and a row offset/limit narrow what
+        is read; the limit defaults to 5,000 rows and is hard-capped at
+        50,000 regardless of what is requested, and the result is further
+        trimmed if needed to fit the 640 KiB output cap — truncated=true and
+        total_rows_available report whenever the result is a strict subset
+        of what was available. An unknown requested column name or
+        malformed input returns a structured error.
+      input: ProjectRequest
+      output: ProjectResult

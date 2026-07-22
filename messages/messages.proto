@@ -1,0 +1,284 @@
+// This file defines the data contracts (messages) for your Axiom package.
+// Every node's --input and --output refers to a message defined here.
+//
+// Run `axiom create message <Name>` to scaffold a new message below.
+// Run `axiom generate` to compile these definitions into language bindings in gen/.
+//
+// DOCUMENTATION
+//   Comments written directly above a message or field declaration are extracted
+//   automatically at publish time and shown in the Axiom registry as documentation.
+//   Write your descriptions there — no separate doc files needed.
+//
+//   Leading comment  (no blank line before the declaration) → registry description ✓
+//   Detached comment (blank line before the declaration)    → ignored by registry  ✗
+//
+// This file is yours to edit. Axiom only appends new message blocks — it never
+// overwrites or removes content you have written.
+
+syntax = "proto3";
+
+package christiangeorgelucas.parquet_tools;
+
+// Data contracts for christiangeorgelucas/parquet-tools — deterministic,
+// stateless inspection and bounded transformation of Apache Parquet and
+// Apache Arrow IPC columnar files, wrapping pyarrow (Apache-2.0, the
+// reference Python binding to the Arrow C++ library, which also owns the
+// canonical Parquet reader/writer).
+//
+// Every node is a pure bytes-in/bytes-out (or bytes-in/struct-out) transform
+// over caller-supplied data — nothing is ever read from a real filesystem or
+// fetched from a URL. Binary payloads use the `data` field name throughout
+// (the convention this package's siblings — archive-tools, midi-tools — use
+// for the same reason: a flow edge that just moves bytes needs one obvious
+// field to bind to). Textual CSV/JSON produced or consumed by ConvertFormat
+// and Project is carried as UTF-8 bytes in that same `data` field, not a
+// `string`, so one field type serves every FileFormat without a per-format
+// branch in the envelope itself.
+//
+// SAFETY (see nodes/_helpers.py for the enforced bounds):
+//   - Every `data` input is capped at MAX_INPUT_BYTES (640 KiB — well under
+//     the platform's deployed-invocation ingress limit, which binds tighter
+//     than the raw node gRPC transport cap; this is a defensive check on
+//     the raw payload before any parsing).
+//   - Before materializing a Parquet file's data into memory, its footer
+//     metadata (num_rows, cheap — no decompression) is checked against a
+//     row-count bound and the read is refused with a structured error if
+//     it would exceed that bound, rather than decoding an unbounded number
+//     of rows first. Arrow IPC has no equivalent cheap pre-check, so its
+//     decoded Table size is checked immediately after materialization and
+//     discarded on overflow before any further work.
+//   - ConvertFormat represents the WHOLE input file in the target format;
+//     if that whole-file result would exceed MAX_OUTPUT_BYTES it is
+//     REJECTED with a structured TOO_LARGE error (never silently
+//     truncated) — use Project for a deliberately bounded subset instead.
+//   - Project's row handling is bounded by MAX_ROWS_HARD_CAP regardless of
+//     what the caller requests; it reports `truncated=true` whenever fewer
+//     rows were returned than the source actually had available.
+
+// The concrete file/wire format a `data` payload is encoded as.
+enum FileFormat {
+  FILE_FORMAT_UNSPECIFIED = 0;
+  // Apache Parquet (columnar, self-describing footer with schema + stats).
+  FILE_FORMAT_PARQUET = 1;
+  // Apache Arrow IPC. Accepts either the "file" framing (random access,
+  // has a footer) or the streaming framing (sequential record batches);
+  // ConvertFormat/Project always WRITE the file framing.
+  FILE_FORMAT_ARROW_IPC = 2;
+  // RFC 4180 CSV, UTF-8 text, header row first. Carried as UTF-8 bytes in
+  // `data` (not a `string`) — see the package-level comment above.
+  FILE_FORMAT_CSV = 3;
+  // A JSON array of flat record objects: [{"a":1,"b":"x"}, ...]. Carried
+  // as UTF-8 bytes in `data`.
+  FILE_FORMAT_JSON = 4;
+}
+
+// A structured, deterministic failure. Every output message carries one; it
+// is unset (empty code) on success. Nodes never raise or crash on bad
+// input — they return this instead. Codes: INVALID_INPUT (empty/unparseable
+// data for the declared format), INVALID_ARGUMENT (a bad operation
+// parameter, e.g. an unknown column name or unsupported format pairing),
+// TOO_LARGE (input or would-be output past a documented cap), PARSE_ERROR
+// (the bytes could not be parsed as the declared FileFormat).
+message Error {
+  // Stable machine-readable code (see message-level doc for the set).
+  string code = 1;
+  // Human-readable detail naming exactly what was rejected and why.
+  string message = 2;
+}
+
+// Input to ReadSchema: the columns, types, nullability, and key/value
+// metadata of a Parquet or Arrow IPC file.
+message ReadSchemaRequest {
+  // Parquet or Arrow IPC bytes.
+  bytes data = 1;
+  // FILE_FORMAT_PARQUET or FILE_FORMAT_ARROW_IPC. Unspecified is rejected
+  // (INVALID_ARGUMENT) — schema reading needs a self-describing columnar
+  // source, not CSV/JSON.
+  FileFormat format = 2;
+}
+
+// One column's schema entry.
+message ColumnSchema {
+  string name = 1;
+  // The Arrow logical type's string form, e.g. "int64", "string",
+  // "timestamp[us, tz=UTC]", "list<item: int32>", "struct<...>".
+  string arrow_type = 2;
+  bool nullable = 3;
+  // Parquet field id if the file declares one, else -1. Always -1 for
+  // Arrow IPC (the concept doesn't exist there).
+  int32 field_id = 4;
+}
+
+message ReadSchemaResult {
+  repeated ColumnSchema columns = 1;
+  // Schema-level key/value metadata (Arrow's custom_metadata / Parquet's
+  // key_value_metadata), decoded as UTF-8; a non-UTF-8 value is omitted.
+  map<string, string> metadata = 2;
+  // What was actually detected while parsing: "parquet",
+  // "arrow_ipc_file", or "arrow_ipc_stream".
+  string format_detected = 3;
+  Error error = 4;
+}
+
+// Input to ReadFileMetadata: file- and row-group-level metadata (row/column
+// counts, format version, per-row-group sizes) of a Parquet or Arrow IPC
+// file.
+message ReadFileMetadataRequest {
+  bytes data = 1;
+  // FILE_FORMAT_PARQUET or FILE_FORMAT_ARROW_IPC.
+  FileFormat format = 2;
+}
+
+// Per-row-group summary (Parquet only; Arrow IPC reports one synthetic
+// "row group" per record batch instead, since it has no row-group concept).
+message RowGroupSummary {
+  int32 index = 1;
+  int64 num_rows = 2;
+  // Uncompressed byte size of the row group's column data, from the
+  // footer's own accounting (not measured by decompressing).
+  int64 total_byte_size = 3;
+  // Compressed on-disk byte size of the row group's column data.
+  int64 total_compressed_size = 4;
+}
+
+message ReadFileMetadataResult {
+  int64 num_rows = 1;
+  int64 num_columns = 2;
+  // 0 for Arrow IPC stream framing (no row groups); record-batch count
+  // for Arrow IPC file framing; actual row-group count for Parquet.
+  int32 num_row_groups = 3;
+  // Parquet: the format_version string (e.g. "1.0", "2.6"). Arrow IPC:
+  // "arrow_ipc_file" or "arrow_ipc_stream".
+  string format_version = 4;
+  // Parquet's created_by footer string; empty for Arrow IPC.
+  string created_by = 5;
+  // Parquet footer's serialized (metadata) size in bytes; 0 for Arrow IPC.
+  int64 serialized_size = 6;
+  // Per-row-group summaries, capped at MAX_ROW_GROUPS_RETURNED entries.
+  repeated RowGroupSummary row_groups = 7;
+  // True if row_groups was capped and more exist than were returned.
+  bool row_groups_truncated = 8;
+  Error error = 9;
+}
+
+// Input to ReadColumnStatistics: per-column statistics (null counts,
+// min/max, compression, encodings) of a Parquet or Arrow IPC file.
+message ReadColumnStatisticsRequest {
+  bytes data = 1;
+  // FILE_FORMAT_PARQUET or FILE_FORMAT_ARROW_IPC. Parquet carries rich
+  // per-column-chunk statistics (min/max/null_count/distinct_count,
+  // encodings, compression) in its footer; Arrow IPC has none of that
+  // structurally, so its statistics are computed by one pass over the
+  // decoded data (null_count and min/max only — no distinct_count, no
+  // compression/encoding, since Arrow IPC doesn't have those concepts).
+  FileFormat format = 2;
+  // Column names to report on; empty means all columns (capped at
+  // MAX_COLUMNS_RETURNED).
+  repeated string columns = 3;
+}
+
+message ColumnStatistics {
+  string name = 1;
+  string physical_type = 2;
+  // -1 if unknown/not reported by the source.
+  int64 null_count = 3;
+  // -1 if unknown/not reported by the source (Parquet only ever reports
+  // this when every row group's stats carry it; Arrow IPC never reports
+  // it — computing exact distinct counts is out of scope for a stats
+  // node, not just "not implemented").
+  int64 distinct_count = 4;
+  // Stringified min/max (e.g. "42", "2024-01-01T00:00:00", "abc").
+  string min_value = 5;
+  string max_value = 6;
+  bool has_min_max = 7;
+  // Parquet only; empty for Arrow IPC.
+  string compression = 8;
+  repeated string encodings = 9;
+  int64 total_compressed_size = 10;
+  int64 total_uncompressed_size = 11;
+}
+
+message ReadColumnStatisticsResult {
+  repeated ColumnStatistics columns = 1;
+  int64 num_rows = 2;
+  // True if the requested/implied column set exceeded MAX_COLUMNS_RETURNED
+  // and was capped.
+  bool columns_truncated = 3;
+  Error error = 4;
+}
+
+// Input to ValidateFile: a cheap structural well-formedness check, without
+// paying for a full schema/statistics read.
+message ValidateFileRequest {
+  bytes data = 1;
+  // FILE_FORMAT_PARQUET or FILE_FORMAT_ARROW_IPC.
+  FileFormat format = 2;
+}
+
+message ValidateFileResult {
+  // True iff `data` parses as a structurally valid file of `format`
+  // (footer/schema readable) within the documented size caps. False for
+  // anything that fails to parse OR that exceeds MAX_DECOMPRESSED_BYTES —
+  // detail says which.
+  bool valid = 1;
+  // "parquet", "arrow_ipc_file", or "arrow_ipc_stream" if detected;
+  // empty if not recognized at all.
+  string detected_format = 2;
+  // Human-readable reason when valid=false; empty when valid=true.
+  string detail = 3;
+  // Reserved for a hard input-level failure (e.g. TOO_LARGE on the raw
+  // input bytes) distinct from "this file is not valid Parquet/Arrow" —
+  // that business outcome is reported via valid=false/detail, not here.
+  Error error = 4;
+}
+
+// Input to ConvertFormat: convert a whole small file between Parquet, Arrow
+// IPC, CSV, and JSON.
+message ConvertFormatRequest {
+  bytes data = 1;
+  FileFormat input_format = 2;
+  FileFormat output_format = 3;
+}
+
+message ConvertFormatResult {
+  bytes data = 1;
+  FileFormat output_format = 2;
+  int64 num_rows = 3;
+  Error error = 4;
+}
+
+// Input to Project: select/project a bounded subset of columns and rows out
+// of a Parquet or Arrow IPC file, in any output FileFormat.
+message ProjectRequest {
+  bytes data = 1;
+  // FILE_FORMAT_PARQUET or FILE_FORMAT_ARROW_IPC — projection pushdown
+  // (reading only the requested columns/row range) only makes sense
+  // against a columnar source.
+  FileFormat input_format = 2;
+  // Column names to keep, in the given order; empty means all columns.
+  repeated string columns = 3;
+  // 0-based row offset into the (post-column-selection) data.
+  int64 row_offset = 4;
+  // Max rows to return. <=0 means "use the default" (DEFAULT_ROW_LIMIT);
+  // any value is still capped at MAX_ROWS_HARD_CAP.
+  int64 row_limit = 5;
+  // FILE_FORMAT_PARQUET, FILE_FORMAT_ARROW_IPC, FILE_FORMAT_CSV, or
+  // FILE_FORMAT_JSON.
+  FileFormat output_format = 6;
+}
+
+message ProjectResult {
+  bytes data = 1;
+  repeated string columns = 2;
+  // Rows actually returned (after offset/limit/cap).
+  int64 num_rows = 3;
+  // Total rows the source had after column selection, before
+  // offset/limit — lets a caller tell "that's everything" from "there's
+  // more".
+  int64 total_rows_available = 4;
+  // True if num_rows < (total_rows_available - row_offset), i.e. the
+  // result is a strict subset of what row_offset onward could have
+  // produced.
+  bool truncated = 5;
+  Error error = 6;
+}
