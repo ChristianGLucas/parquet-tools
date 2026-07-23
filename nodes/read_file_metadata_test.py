@@ -25,7 +25,6 @@ def test_read_file_metadata_parquet_golden():
     assert result.row_groups[0].num_rows == 3
     assert result.row_groups[1].num_rows == 2
     assert sum(rg.num_rows for rg in result.row_groups) == 5
-    assert result.row_groups_truncated is False
     assert result.created_by != ""
 
 

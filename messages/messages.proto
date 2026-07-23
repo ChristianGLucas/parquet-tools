@@ -35,27 +35,12 @@ package christiangeorgelucas.parquet_tools;
 // `string`, so one field type serves every FileFormat without a per-format
 // branch in the envelope itself.
 //
-// SAFETY (see nodes/_helpers.py for the enforced bounds):
-//   - Every `data` input is capped at MAX_INPUT_BYTES (11 MiB raw — the
-//     platform's deployed-invocation ingress accepts up to a 16 MiB invoke
-//     payload; a base64-in-JSON `data` field expands raw bytes by ~1.33x,
-//     so 11 MiB raw leaves headroom under that ceiling for JSON envelope
-//     overhead. This is a defensive check on the raw payload before any
-//     parsing).
-//   - Before materializing a Parquet file's data into memory, its footer
-//     metadata (num_rows, cheap — no decompression) is checked against a
-//     row-count bound and the read is refused with a structured error if
-//     it would exceed that bound, rather than decoding an unbounded number
-//     of rows first. Arrow IPC has no equivalent cheap pre-check, so its
-//     decoded Table size is checked immediately after materialization and
-//     discarded on overflow before any further work.
-//   - ConvertFormat represents the WHOLE input file in the target format;
-//     if that whole-file result would exceed MAX_OUTPUT_BYTES it is
-//     REJECTED with a structured TOO_LARGE error (never silently
-//     truncated) — use Project for a deliberately bounded subset instead.
-//   - Project's row handling is bounded by MAX_ROWS_HARD_CAP regardless of
-//     what the caller requests; it reports `truncated=true` whenever fewer
-//     rows were returned than the source actually had available.
+// This package contains no payload-size, row-count, or decoded-size
+// ceilings — a node is a pure input->output function, and payload size,
+// memory, and DoS containment are the platform's job, not the package's.
+// ConvertFormat represents the WHOLE input file in the target format;
+// Project instead lets a caller select a deliberately bounded column/row
+// subset (see ProjectRequest) — a domain feature, not a resource guard.
 
 // The concrete file/wire format a `data` payload is encoded as.
 enum FileFormat {
@@ -79,8 +64,7 @@ enum FileFormat {
 // input — they return this instead. Codes: INVALID_INPUT (empty/unparseable
 // data for the declared format), INVALID_ARGUMENT (a bad operation
 // parameter, e.g. an unknown column name or unsupported format pairing),
-// TOO_LARGE (input or would-be output past a documented cap), PARSE_ERROR
-// (the bytes could not be parsed as the declared FileFormat).
+// PARSE_ERROR (the bytes could not be parsed as the declared FileFormat).
 message Error {
   // Stable machine-readable code (see message-level doc for the set).
   string code = 1;
@@ -156,11 +140,10 @@ message ReadFileMetadataResult {
   string created_by = 5;
   // Parquet footer's serialized (metadata) size in bytes; 0 for Arrow IPC.
   int64 serialized_size = 6;
-  // Per-row-group summaries, capped at MAX_ROW_GROUPS_RETURNED entries.
+  // Per-row-group summary (one entry per Parquet row group, or per Arrow
+  // IPC file-framed record batch; empty for stream framing).
   repeated RowGroupSummary row_groups = 7;
-  // True if row_groups was capped and more exist than were returned.
-  bool row_groups_truncated = 8;
-  Error error = 9;
+  Error error = 8;
 }
 
 // Input to ReadColumnStatistics: per-column statistics (null counts,
@@ -174,8 +157,7 @@ message ReadColumnStatisticsRequest {
   // decoded data (null_count and min/max only — no distinct_count, no
   // compression/encoding, since Arrow IPC doesn't have those concepts).
   FileFormat format = 2;
-  // Column names to report on; empty means all columns (capped at
-  // MAX_COLUMNS_RETURNED).
+  // Column names to report on; empty means all columns.
   repeated string columns = 3;
 }
 
@@ -205,10 +187,7 @@ message ColumnStatistics {
 message ReadColumnStatisticsResult {
   repeated ColumnStatistics columns = 1;
   int64 num_rows = 2;
-  // True if the requested/implied column set exceeded MAX_COLUMNS_RETURNED
-  // and was capped.
-  bool columns_truncated = 3;
-  Error error = 4;
+  Error error = 3;
 }
 
 // Input to ValidateFile: a cheap structural well-formedness check, without
@@ -221,22 +200,21 @@ message ValidateFileRequest {
 
 message ValidateFileResult {
   // True iff `data` parses as a structurally valid file of `format`
-  // (footer/schema readable) within the documented size caps. False for
-  // anything that fails to parse OR that exceeds MAX_DECOMPRESSED_BYTES —
-  // detail says which.
+  // (footer/schema readable). False for anything that fails to parse —
+  // detail says why.
   bool valid = 1;
   // "parquet", "arrow_ipc_file", or "arrow_ipc_stream" if detected;
   // empty if not recognized at all.
   string detected_format = 2;
   // Human-readable reason when valid=false; empty when valid=true.
   string detail = 3;
-  // Reserved for a hard input-level failure (e.g. TOO_LARGE on the raw
-  // input bytes) distinct from "this file is not valid Parquet/Arrow" —
-  // that business outcome is reported via valid=false/detail, not here.
+  // Reserved for a hard input-level failure (e.g. empty input) distinct
+  // from "this file is not valid Parquet/Arrow" — that business outcome
+  // is reported via valid=false/detail, not here.
   Error error = 4;
 }
 
-// Input to ConvertFormat: convert a whole small file between Parquet, Arrow
+// Input to ConvertFormat: convert a whole file between Parquet, Arrow
 // IPC, CSV, and JSON.
 message ConvertFormatRequest {
   bytes data = 1;
@@ -263,8 +241,8 @@ message ProjectRequest {
   repeated string columns = 3;
   // 0-based row offset into the (post-column-selection) data.
   int64 row_offset = 4;
-  // Max rows to return. <=0 means "use the default" (DEFAULT_ROW_LIMIT);
-  // any value is still capped at MAX_ROWS_HARD_CAP.
+  // Max rows to return. <=0 means "use the default" (5,000 rows); any
+  // positive value is honored as requested.
   int64 row_limit = 5;
   // FILE_FORMAT_PARQUET, FILE_FORMAT_ARROW_IPC, FILE_FORMAT_CSV, or
   // FILE_FORMAT_JSON.
@@ -274,7 +252,7 @@ message ProjectRequest {
 message ProjectResult {
   bytes data = 1;
   repeated string columns = 2;
-  // Rows actually returned (after offset/limit/cap).
+  // Rows actually returned (after offset/limit).
   int64 num_rows = 3;
   // Total rows the source had after column selection, before
   // offset/limit — lets a caller tell "that's everything" from "there's

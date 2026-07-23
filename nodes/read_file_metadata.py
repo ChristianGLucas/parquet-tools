@@ -9,8 +9,7 @@ from gen.messages_pb2 import (
 )
 from gen.axiom_context import AxiomContext
 from nodes._helpers import (
-    MAX_ROW_GROUPS_RETURNED,
-    check_input_size,
+    check_input_not_empty,
     invalid_argument,
     open_arrow_ipc,
     parse_error,
@@ -21,13 +20,12 @@ def read_file_metadata(ax: AxiomContext, input: ReadFileMetadataRequest) -> Read
     """Read a Parquet or Arrow IPC file's file- and row-group-level
     metadata: total row/column counts, row-group (or Arrow-IPC
     record-batch) count, format version string, Parquet's created_by
-    footer string, footer serialized size, and a per-row-group summary
-    capped at 1000 entries with a truncation flag. Malformed input returns
-    a structured error rather than crashing.
+    footer string, footer serialized size, and a per-row-group summary.
+    Malformed input returns a structured error rather than crashing.
     """
-    size_err = check_input_size(input.data)
-    if size_err is not None:
-        return ReadFileMetadataResult(error=size_err)
+    empty_err = check_input_not_empty(input.data)
+    if empty_err is not None:
+        return ReadFileMetadataResult(error=empty_err)
 
     if input.format == FileFormat.FILE_FORMAT_PARQUET:
         try:
@@ -36,8 +34,7 @@ def read_file_metadata(ax: AxiomContext, input: ReadFileMetadataRequest) -> Read
             return ReadFileMetadataResult(error=parse_error(f"malformed Parquet file: {e}"))
         md = pf.metadata
         row_groups = []
-        truncated = md.num_row_groups > MAX_ROW_GROUPS_RETURNED
-        for i in range(min(md.num_row_groups, MAX_ROW_GROUPS_RETURNED)):
+        for i in range(md.num_row_groups):
             rg = md.row_group(i)
             total_compressed = sum(rg.column(j).total_compressed_size for j in range(rg.num_columns))
             row_groups.append(
@@ -56,7 +53,6 @@ def read_file_metadata(ax: AxiomContext, input: ReadFileMetadataRequest) -> Read
             created_by=md.created_by or "",
             serialized_size=md.serialized_size,
             row_groups=row_groups,
-            row_groups_truncated=truncated,
         )
 
     if input.format == FileFormat.FILE_FORMAT_ARROW_IPC:
@@ -67,20 +63,18 @@ def read_file_metadata(ax: AxiomContext, input: ReadFileMetadataRequest) -> Read
 
         if opened.kind == "arrow_ipc_file":
             num_batches = opened.reader.num_record_batches
-            truncated = num_batches > MAX_ROW_GROUPS_RETURNED
             row_groups = []
             total_rows = 0
             for i in range(num_batches):
                 batch = opened.reader.get_batch(i)
-                if i < MAX_ROW_GROUPS_RETURNED:
-                    row_groups.append(
-                        RowGroupSummary(
-                            index=i,
-                            num_rows=batch.num_rows,
-                            total_byte_size=batch.nbytes,
-                            total_compressed_size=0,
-                        )
+                row_groups.append(
+                    RowGroupSummary(
+                        index=i,
+                        num_rows=batch.num_rows,
+                        total_byte_size=batch.nbytes,
+                        total_compressed_size=0,
                     )
+                )
                 total_rows += batch.num_rows
         else:
             # Streaming framing has no random-access batch index; iterate
@@ -89,7 +83,6 @@ def read_file_metadata(ax: AxiomContext, input: ReadFileMetadataRequest) -> Read
             num_batches = 0
             total_rows = 0
             row_groups = []
-            truncated = False
             for batch in opened.reader:
                 total_rows += batch.num_rows
 
@@ -101,7 +94,6 @@ def read_file_metadata(ax: AxiomContext, input: ReadFileMetadataRequest) -> Read
             created_by="",
             serialized_size=0,
             row_groups=row_groups,
-            row_groups_truncated=truncated,
         )
 
     return ReadFileMetadataResult(

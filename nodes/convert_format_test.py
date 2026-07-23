@@ -7,7 +7,6 @@ import pyarrow.parquet as pq
 
 from gen.messages_pb2 import ConvertFormatRequest, FileFormat
 from nodes.convert_format import convert_format
-from nodes._helpers import MAX_INPUT_BYTES
 from nodes._test_fixtures import (
     FakeAxiomContext,
     arrow_ipc_file_bytes,
@@ -138,55 +137,11 @@ def test_convert_format_malformed_json_is_parse_error():
     assert result.error.code == "PARSE_ERROR"
 
 
-def test_convert_format_rejects_oversized_source_row_count():
-    """A source whose declared row count implies a decoded size well past
-    the estimate cap is rejected with TOO_LARGE before conversion, even
-    though its on-disk (RLE/dictionary-compressed) size is tiny and well
-    under the input-byte cap."""
-    ax = FakeAxiomContext()
-    n = 20_000_000
-    huge_table = pa.table({"x": pa.array([1] * n, type=pa.int64())})
-    buf = io.BytesIO()
-    pq.write_table(huge_table, buf, compression="snappy")
-    data = buf.getvalue()
-    assert len(data) < MAX_INPUT_BYTES  # confirms this is a genuine "small
-    # on disk, huge decoded" case, not just hitting the input-size cap first
-
-    result = convert_format(
-        ax,
-        ConvertFormatRequest(
-            data=data,
-            input_format=FileFormat.FILE_FORMAT_PARQUET,
-            output_format=FileFormat.FILE_FORMAT_CSV,
-        ),
-    )
-    assert result.error.code == "TOO_LARGE"
-
-
-def test_convert_format_rejects_oversized_raw_input():
-    """Regression test for the raw input-size error contract at the current
-    MAX_INPUT_BYTES cap: bytes over the cap are rejected cleanly with
-    TOO_LARGE before any parsing is attempted, not a crash or a timeout."""
-    ax = FakeAxiomContext()
-    oversized = b"x" * (MAX_INPUT_BYTES + 1)
-    result = convert_format(
-        ax,
-        ConvertFormatRequest(
-            data=oversized,
-            input_format=FileFormat.FILE_FORMAT_PARQUET,
-            output_format=FileFormat.FILE_FORMAT_CSV,
-        ),
-    )
-    assert result.error.code == "TOO_LARGE"
-    assert result.data == b""
-
-
-def test_convert_format_legit_payload_above_old_cap_now_flows():
-    """A whole-file conversion result well over the package's old 640 KiB
-    output cap (from before the platform's ingress bug was fixed) but
-    comfortably under the current MAX_OUTPUT_BYTES cap must succeed, not be
-    rejected as TOO_LARGE — proving the raised cap actually governs
-    behavior, not just the row-count pre-check."""
+def test_convert_format_large_legit_payload_flows_through_untouched():
+    """A whole-file conversion of a source with a large decoded row count
+    (well past the package's old decode-estimate/output caps, both now
+    removed) must succeed in full and untruncated — the platform, not this
+    package, is responsible for containing payload/memory size."""
     ax = FakeAxiomContext()
     rows = 20_000
     table = pa.table(
@@ -208,9 +163,8 @@ def test_convert_format_legit_payload_above_old_cap_now_flows():
         ),
     )
     assert result.error.code == ""
-    assert len(result.data) > 640 * 1024  # bigger than the old cap...
-    assert len(result.data) < MAX_INPUT_BYTES  # ...but well under the new one
     assert result.num_rows == rows
+    assert len(result.data) > 640 * 1024  # comfortably bigger than the old cap
 
 
 def test_convert_format_is_deterministic():

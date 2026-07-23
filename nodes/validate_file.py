@@ -4,9 +4,7 @@ import pyarrow.parquet as pq
 from gen.messages_pb2 import FileFormat, ValidateFileRequest, ValidateFileResult
 from gen.axiom_context import AxiomContext
 from nodes._helpers import (
-    MAX_ESTIMATED_DECODE_BYTES,
-    check_input_size,
-    estimate_decoded_bytes,
+    check_input_not_empty,
     invalid_argument,
     open_arrow_ipc,
 )
@@ -14,33 +12,21 @@ from nodes._helpers import (
 
 def validate_file(ax: AxiomContext, input: ValidateFileRequest) -> ValidateFileResult:
     """Cheaply check whether bytes are a structurally well-formed Parquet or
-    Arrow IPC file (footer/schema parses) within the package's documented
-    size caps, without paying for a full schema or statistics read. Returns
-    valid=false with a human-readable detail (not a crash or a raised
-    error) for anything unparseable or over the decompressed-size cap; a
-    hard input-level failure (e.g. the raw payload itself is oversized) is
-    reported via the separate structured error field.
+    Arrow IPC file (footer/schema parses), without paying for a full schema
+    or statistics read. Returns valid=false with a human-readable detail
+    (not a crash or a raised error) for anything unparseable; a hard
+    input-level failure (e.g. empty input) is reported via the separate
+    structured error field.
     """
-    size_err = check_input_size(input.data)
-    if size_err is not None:
-        return ValidateFileResult(error=size_err)
+    empty_err = check_input_not_empty(input.data)
+    if empty_err is not None:
+        return ValidateFileResult(error=empty_err)
 
     if input.format == FileFormat.FILE_FORMAT_PARQUET:
         try:
             pf = pq.ParquetFile(pa.BufferReader(input.data))
         except Exception as e:
             return ValidateFileResult(valid=False, detail=f"malformed Parquet file: {e}")
-        est = estimate_decoded_bytes(pf.schema_arrow, None, pf.metadata.num_rows)
-        if est > MAX_ESTIMATED_DECODE_BYTES:
-            return ValidateFileResult(
-                valid=False,
-                detected_format="parquet",
-                detail=(
-                    f"parses, but estimated decoded size ~{est} bytes exceeds "
-                    f"the {MAX_ESTIMATED_DECODE_BYTES}-byte cap "
-                    f"({pf.metadata.num_rows} rows)"
-                ),
-            )
         return ValidateFileResult(valid=True, detected_format="parquet", detail="")
 
     if input.format == FileFormat.FILE_FORMAT_ARROW_IPC:

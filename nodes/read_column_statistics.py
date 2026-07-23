@@ -10,14 +10,11 @@ from gen.messages_pb2 import (
 )
 from gen.axiom_context import AxiomContext
 from nodes._helpers import (
-    MAX_COLUMNS_RETURNED,
-    MAX_DECODED_BYTES,
-    check_input_size,
+    check_input_not_empty,
     invalid_argument,
     open_arrow_ipc,
     parse_error,
     stringify_scalar,
-    too_large,
 )
 
 
@@ -45,9 +42,6 @@ def _read_column_statistics_parquet(data: bytes, requested_columns):
     unknown = [c for c in requested if c not in all_names]
     if unknown:
         return None, invalid_argument(f"unknown column(s): {', '.join(unknown)}")
-
-    truncated = len(requested) > MAX_COLUMNS_RETURNED
-    requested = requested[:MAX_COLUMNS_RETURNED]
 
     md = pf.metadata
     results = []
@@ -116,7 +110,7 @@ def _read_column_statistics_parquet(data: bytes, requested_columns):
         )
 
     return ReadColumnStatisticsResult(
-        columns=results, num_rows=md.num_rows, columns_truncated=truncated
+        columns=results, num_rows=md.num_rows
     ), None
 
 
@@ -126,19 +120,12 @@ def _read_column_statistics_arrow_ipc(data: bytes, requested_columns):
         table = opened.reader.read_all()
     except Exception as e:
         return None, parse_error(f"malformed Arrow IPC file: {e}")
-    if table.nbytes > MAX_DECODED_BYTES:
-        return None, too_large(
-            f"decoded size {table.nbytes} bytes exceeds the {MAX_DECODED_BYTES}-byte cap"
-        )
 
     all_names = table.schema.names
     requested = list(requested_columns) if requested_columns else all_names
     unknown = [c for c in requested if c not in all_names]
     if unknown:
         return None, invalid_argument(f"unknown column(s): {', '.join(unknown)}")
-
-    truncated = len(requested) > MAX_COLUMNS_RETURNED
-    requested = requested[:MAX_COLUMNS_RETURNED]
 
     results = []
     for name in requested:
@@ -172,7 +159,7 @@ def _read_column_statistics_arrow_ipc(data: bytes, requested_columns):
         )
 
     return ReadColumnStatisticsResult(
-        columns=results, num_rows=table.num_rows, columns_truncated=truncated
+        columns=results, num_rows=table.num_rows
     ), None
 
 
@@ -184,12 +171,12 @@ def read_column_statistics(ax: AxiomContext, input: ReadColumnStatisticsRequest)
     Arrow IPC has no such footer, so its null_count/min/max are computed by
     one in-memory pass over the decoded data and distinct_count/compression/
     encodings are always absent. Caller can request specific columns (empty
-    = all, capped at 500 with a truncation flag). Malformed input or an
-    unknown requested column name returns a structured error.
+    = all). Malformed input or an unknown requested column name returns a
+    structured error.
     """
-    size_err = check_input_size(input.data)
-    if size_err is not None:
-        return ReadColumnStatisticsResult(error=size_err)
+    empty_err = check_input_not_empty(input.data)
+    if empty_err is not None:
+        return ReadColumnStatisticsResult(error=empty_err)
 
     if input.format == FileFormat.FILE_FORMAT_PARQUET:
         result, err = _read_column_statistics_parquet(input.data, input.columns)

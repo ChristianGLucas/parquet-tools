@@ -4,7 +4,7 @@ import pyarrow.parquet as pq
 from gen.messages_pb2 import ColumnSchema, FileFormat, ReadSchemaRequest, ReadSchemaResult
 from gen.axiom_context import AxiomContext
 from nodes._helpers import (
-    check_input_size,
+    check_input_not_empty,
     decode_kv_metadata,
     invalid_argument,
     open_arrow_ipc,
@@ -20,9 +20,9 @@ def read_schema(ax: AxiomContext, input: ReadSchemaRequest) -> ReadSchemaResult:
     file-framed or stream-framed. Malformed input or an unsupported/
     unspecified format returns a structured error rather than crashing.
     """
-    size_err = check_input_size(input.data)
-    if size_err is not None:
-        return ReadSchemaResult(error=size_err)
+    empty_err = check_input_not_empty(input.data)
+    if empty_err is not None:
+        return ReadSchemaResult(error=empty_err)
 
     if input.format == FileFormat.FILE_FORMAT_PARQUET:
         try:

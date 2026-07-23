@@ -4,19 +4,17 @@ import pyarrow.parquet as pq
 from gen.messages_pb2 import FileFormat, ProjectRequest, ProjectResult
 from gen.axiom_context import AxiomContext
 from nodes._helpers import (
-    DEFAULT_ROW_LIMIT,
-    MAX_ESTIMATED_DECODE_BYTES,
-    MAX_OUTPUT_BYTES,
-    MAX_ROWS_HARD_CAP,
     FormatError,
-    check_input_size,
-    estimate_decoded_bytes,
+    check_input_not_empty,
     invalid_argument,
     open_arrow_ipc,
     parse_error,
-    too_large,
     write_table_to_bytes,
 )
+
+# Default row_limit when the caller passes <=0 (a domain default, not a
+# resource ceiling — the caller can always ask for more via row_limit).
+DEFAULT_ROW_LIMIT = 5_000
 
 _OUTPUT_FORMATS = {
     FileFormat.FILE_FORMAT_PARQUET,
@@ -47,13 +45,6 @@ def _project_parquet(data: bytes, columns, row_offset: int, row_limit: int):
 
     total_rows = pf.metadata.num_rows
     need = 0 if row_offset >= total_rows else min(row_offset + row_limit, total_rows)
-
-    est = estimate_decoded_bytes(schema, selected, need)
-    if est > MAX_ESTIMATED_DECODE_BYTES:
-        raise MemoryError(
-            f"estimated decoded size ~{est} bytes for {need} rows exceeds "
-            f"the {MAX_ESTIMATED_DECODE_BYTES}-byte cap"
-        )
 
     if need == 0:
         table = pf.schema_arrow.empty_table().select(selected)
@@ -99,13 +90,6 @@ def _project_arrow_ipc(data: bytes, columns, row_offset: int, row_limit: int):
         [f for f in opened.reader.schema if f.name in selected]
     ).empty_table()
 
-    est_bytes = sum(c.nbytes for c in chunks)
-    if est_bytes > MAX_ESTIMATED_DECODE_BYTES:
-        raise MemoryError(
-            f"decoded size ~{est_bytes} bytes for the requested range exceeds "
-            f"the {MAX_ESTIMATED_DECODE_BYTES}-byte cap"
-        )
-
     result = table.slice(row_offset, row_limit)
     truncated = (row_offset + result.num_rows) < total_rows
     return result, selected, total_rows, truncated
@@ -115,16 +99,14 @@ def project(ax: AxiomContext, input: ProjectRequest) -> ProjectResult:
     """Select/project a bounded subset of columns and rows out of a Parquet
     or Arrow IPC file and emit it as Parquet, Arrow IPC, CSV, or JSON.
     Columns (empty = all) and a row offset/limit narrow what is read; the
-    limit defaults to 5,000 rows and is hard-capped at 50,000 regardless of
-    what is requested, and the result is further trimmed if needed to fit
-    the MAX_OUTPUT_BYTES cap — truncated=true and total_rows_available
-    report whenever the result is a strict subset of what was available. An
-    unknown requested column name or malformed input returns a structured
-    error.
+    limit defaults to 5,000 rows when not specified. truncated=true and
+    total_rows_available report whenever the result is a strict subset of
+    what was available at the given offset. An unknown requested column
+    name or malformed input returns a structured error.
     """
-    size_err = check_input_size(input.data)
-    if size_err is not None:
-        return ProjectResult(error=size_err)
+    empty_err = check_input_not_empty(input.data)
+    if empty_err is not None:
+        return ProjectResult(error=empty_err)
 
     if input.input_format not in (FileFormat.FILE_FORMAT_PARQUET, FileFormat.FILE_FORMAT_ARROW_IPC):
         return ProjectResult(
@@ -136,7 +118,6 @@ def project(ax: AxiomContext, input: ProjectRequest) -> ProjectResult:
         return ProjectResult(error=invalid_argument("row_offset must be >= 0"))
 
     row_limit = input.row_limit if input.row_limit > 0 else DEFAULT_ROW_LIMIT
-    row_limit = min(row_limit, MAX_ROWS_HARD_CAP)
 
     try:
         if input.input_format == FileFormat.FILE_FORMAT_PARQUET:
@@ -149,8 +130,6 @@ def project(ax: AxiomContext, input: ProjectRequest) -> ProjectResult:
             )
     except UnknownColumnError as e:
         return ProjectResult(error=invalid_argument(str(e)))
-    except MemoryError as e:
-        return ProjectResult(error=too_large(str(e)))
     except (FormatError, pa.lib.ArrowInvalid) as e:
         return ProjectResult(error=parse_error(f"malformed input: {e}"))
     except Exception as e:
@@ -160,26 +139,6 @@ def project(ax: AxiomContext, input: ProjectRequest) -> ProjectResult:
         out_bytes = write_table_to_bytes(table, input.output_format)
     except Exception as e:
         return ProjectResult(error=parse_error(f"could not encode as the requested output_format: {e}"))
-
-    # Fit the MAX_OUTPUT_BYTES output cap by shrinking the row count if needed —
-    # this operation is already a deliberately bounded subset, so trimming
-    # further (and reporting it via `truncated`) is the right behavior
-    # rather than an error.
-    while len(out_bytes) > MAX_OUTPUT_BYTES and table.num_rows > 0:
-        new_len = max(1, table.num_rows // 2)
-        if new_len == table.num_rows:
-            break
-        table = table.slice(0, new_len)
-        truncated = True
-        out_bytes = write_table_to_bytes(table, input.output_format)
-
-    if len(out_bytes) > MAX_OUTPUT_BYTES:
-        return ProjectResult(
-            error=too_large(
-                f"result cannot fit the {MAX_OUTPUT_BYTES}-byte output cap even at 1 row "
-                f"(row is too wide) — request fewer columns"
-            )
-        )
 
     return ProjectResult(
         data=out_bytes,

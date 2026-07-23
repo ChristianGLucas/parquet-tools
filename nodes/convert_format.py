@@ -1,14 +1,11 @@
 from gen.messages_pb2 import ConvertFormatRequest, ConvertFormatResult, FileFormat
 from gen.axiom_context import AxiomContext
 from nodes._helpers import (
-    MAX_OUTPUT_BYTES,
     FormatError,
-    TooLargeError,
-    check_input_size,
+    check_input_not_empty,
     invalid_argument,
     parse_error,
     read_table_from_bytes,
-    too_large,
     write_table_to_bytes,
 )
 
@@ -23,16 +20,13 @@ _VALID_FORMATS = {
 def convert_format(ax: AxiomContext, input: ConvertFormatRequest) -> ConvertFormatResult:
     """Convert a whole file between Parquet, Arrow IPC, CSV, and JSON (any
     pairing, including the same format in and out as a normalize/rewrite
-    pass). Represents the ENTIRE input in the target format — if the source
-    has too many rows or the whole-file result would exceed the
-    MAX_OUTPUT_BYTES cap, the call is rejected with a structured TOO_LARGE
-    error rather than silently truncated; use Project instead for a
-    deliberately bounded subset. Malformed input for the declared
-    input_format returns a structured PARSE_ERROR.
+    pass). Represents the ENTIRE input in the target format — use Project
+    instead for a deliberately bounded column/row subset. Malformed input
+    for the declared input_format returns a structured PARSE_ERROR.
     """
-    size_err = check_input_size(input.data)
-    if size_err is not None:
-        return ConvertFormatResult(error=size_err)
+    empty_err = check_input_not_empty(input.data)
+    if empty_err is not None:
+        return ConvertFormatResult(error=empty_err)
 
     if input.input_format not in _VALID_FORMATS:
         return ConvertFormatResult(error=invalid_argument("input_format is not a supported FileFormat"))
@@ -41,8 +35,6 @@ def convert_format(ax: AxiomContext, input: ConvertFormatRequest) -> ConvertForm
 
     try:
         table = read_table_from_bytes(input.data, input.input_format)
-    except TooLargeError as e:
-        return ConvertFormatResult(error=too_large(str(e)))
     except FormatError as e:
         return ConvertFormatResult(error=parse_error(str(e)))
     except ValueError as e:
@@ -52,14 +44,5 @@ def convert_format(ax: AxiomContext, input: ConvertFormatRequest) -> ConvertForm
         out_bytes = write_table_to_bytes(table, input.output_format)
     except Exception as e:
         return ConvertFormatResult(error=parse_error(f"could not encode as the requested output_format: {e}"))
-
-    if len(out_bytes) > MAX_OUTPUT_BYTES:
-        return ConvertFormatResult(
-            error=too_large(
-                f"converted output is {len(out_bytes)} bytes, over the "
-                f"{MAX_OUTPUT_BYTES}-byte cap ({table.num_rows} rows) — use "
-                f"Project for a bounded subset instead"
-            )
-        )
 
     return ConvertFormatResult(data=out_bytes, output_format=input.output_format, num_rows=table.num_rows)

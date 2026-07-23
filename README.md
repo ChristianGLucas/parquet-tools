@@ -18,20 +18,20 @@ transform — no filesystem, network, state, or secrets.
   compression, and encodings (from Parquet's footer where available; computed by one
   pass over decoded data for Arrow IPC).
 - **ValidateFile** — a cheap structural well-formedness check.
-- **ConvertFormat** — convert a whole small file between Parquet, Arrow IPC, CSV, and
+- **ConvertFormat** — convert a whole file between Parquet, Arrow IPC, CSV, and
   JSON.
 - **Project** — select/project a bounded subset of columns and rows into any of those
   formats.
 
-## Bounds
+## Sizing
 
-Every input is capped at 11 MiB and every output at 11 MiB raw (comfortably under the
-platform's 16 MiB deployed-invocation payload limit once base64/JSON envelope overhead
-is accounted for). `ConvertFormat` rejects an over-large
-source by row count before reading it, and represents the whole file — if it would not
-fit the output cap it is rejected with a structured error rather than silently
-truncated (use `Project` for a deliberately bounded subset). `Project`'s row handling
-is bounded by a hard cap regardless of what is requested.
+Every node is a pure input->output function with no self-imposed payload-size,
+row-count, or decoded-size limit — payload size, memory, and DoS containment are the
+platform's job, not this package's. `ConvertFormat` represents the whole file, so its
+output scales with input size. `Project` lets a caller select a deliberately bounded
+column/row subset (row offset/limit default to 5,000 rows when unspecified, and are
+otherwise honored as requested) — a domain feature for narrowing what's read, not a
+resource guard.
 
 ## License
 
