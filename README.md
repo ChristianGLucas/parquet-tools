@@ -1,6 +1,6 @@
 # christiangeorgelucas/parquet-tools
 
-Composable [Axiom](https://axiom.co) nodes for deterministic, offline inspection and
+Composable [Axiom](https://axiomide.com) nodes for deterministic, offline inspection and
 bounded transformation of Apache Parquet and Apache Arrow IPC columnar files, wrapping
 [pyarrow](https://arrow.apache.org/docs/python/) (Apache-2.0) — the reference Python
 binding to the Arrow C++ library, which also owns the canonical Parquet reader/writer.
